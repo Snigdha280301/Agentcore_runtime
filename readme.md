@@ -13,13 +13,10 @@ langgraph-bedrock-agent/
 │── README.md                      # Project instructions (this file)
 │
 ├── deploy/                        # Deployment scripts
-│   ├── deploy_runtime.py          # Configure and launch agent in AgentCore
-│   ├── cleanup_runtime.py         # Delete runtime + ECR repo
-│   └── deploy_runtime.ipynb       # (optional) notebook version
-│
-├── .env                           # (optional) AWS credentials or env vars
-└── tests/                         # (optional) tests
-    └── test_agent.py
+    ├── deploy_runtime.py          # Configure and launch agent in AgentCore
+    └── cleanup_runtime.py         # Delete runtime + ECR repo
+    
+
 ```
 
 ---
