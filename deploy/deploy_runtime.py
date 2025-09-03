@@ -1,6 +1,7 @@
 from bedrock_agentcore_starter_toolkit import Runtime
 from boto3.session import Session
 import time
+import json
 
 boto_session = Session()
 region = boto_session.region_name
@@ -32,3 +33,12 @@ print("Final status:", status)
 
 invoke_response = agentcore_runtime.invoke({"prompt": "How much is 2+2?"})
 print("Invoke response:", invoke_response)
+
+with open("deploy/launch_result.json", "w") as f:
+    json.dump({
+        "agent_id": launch_result.agent_id,
+        "ecr_uri": launch_result.ecr_uri,
+        "agent_arn": launch_result.agent_arn
+    }, f)
+
+print("Saved launch result to deploy/launch_result.json")
