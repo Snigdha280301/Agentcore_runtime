@@ -1,0 +1,73 @@
+# ---------------------------
+# Python
+# ---------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+dist/
+build/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+*.envrc
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Logs & cache
+*.log
+*.tmp
+*.swp
+.cache/
+.mypy_cache/
+.pytest_cache/
+.pyre/
+.pytype/
+.coverage
+htmlcov/
+*.coverage
+*.cover
+
+# ---------------------------
+# VS Code / Editors
+# ---------------------------
+.vscode/
+.idea/
+*.iml
+
+# ---------------------------
+# AWS / Bedrock / AgentCore
+# ---------------------------
+# AWS credentials/config
+.aws/
+# Starter toolkit build artifacts
+agent_runtime_output/
+*.ecr_uri
+*.agent_id
+*.agent_arn
+
+# ---------------------------
+# Environment files / Secrets
+# ---------------------------
+.env
+*.secret
+*.key
+*.pem
+*.json
+
+# ---------------------------
+# OS-specific
+# ---------------------------
+.DS_Store
+Thumbs.db

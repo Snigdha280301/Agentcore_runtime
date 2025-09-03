@@ -1,0 +1,30 @@
+default_agent: langgraph_claude_getting_started
+agents:
+  langgraph_claude_getting_started:
+    name: langgraph_claude_getting_started
+    entrypoint: C:/Users/snigd/Desktop/agentcore runtime/langgraph_bedrock.py
+    platform: linux/arm64
+    container_runtime: none
+    aws:
+      execution_role: arn:aws:iam::356225522107:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-2292fc8165
+      execution_role_auto_create: false
+      account: '356225522107'
+      region: us-east-1
+      ecr_repository: 356225522107.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-langgraph_claude_getting_started
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+    bedrock_agentcore:
+      agent_id: langgraph_claude_getting_started-rp1Ba5BInF
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:356225522107:runtime/langgraph_claude_getting_started-rp1Ba5BInF
+      agent_session_id: e5c1f25a-4e3c-4cc6-81c7-b47dcdcb89b2
+    codebuild:
+      project_name: bedrock-agentcore-langgraph_claude_getting_started-builder
+      execution_role: arn:aws:iam::356225522107:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-2292fc8165
+      source_bucket: bedrock-agentcore-codebuild-sources-356225522107-us-east-1
+    authorizer_configuration: null
+    oauth_configuration: null
