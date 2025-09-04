@@ -1,16 +1,16 @@
-default_agent: langgraph_claude_getting_started
+default_agent: agentcore_runtime3
 agents:
-  langgraph_claude_getting_started:
-    name: langgraph_claude_getting_started
+  agentcore_runtime3:
+    name: agentcore_runtime3
     entrypoint: C:/Users/snigd/Desktop/agentcore runtime/langgraph_bedrock.py
     platform: linux/arm64
     container_runtime: none
     aws:
-      execution_role: arn:aws:iam::356225522107:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-2292fc8165
+      execution_role: arn:aws:iam::356225522107:role/AmazonBedrockAgentCoreSDKRuntime-us-east-1-23b2dbc1b7
       execution_role_auto_create: false
       account: '356225522107'
       region: us-east-1
-      ecr_repository: 356225522107.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-langgraph_claude_getting_started
+      ecr_repository: 356225522107.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-agentcore_runtime3
       ecr_auto_create: false
       network_configuration:
         network_mode: PUBLIC
@@ -19,12 +19,12 @@ agents:
       observability:
         enabled: true
     bedrock_agentcore:
-      agent_id: langgraph_claude_getting_started-rp1Ba5BInF
-      agent_arn: arn:aws:bedrock-agentcore:us-east-1:356225522107:runtime/langgraph_claude_getting_started-rp1Ba5BInF
-      agent_session_id: 429b7e8a-211e-4678-ba0c-96b349c38d07
+      agent_id: agentcore_runtime3-pdwPXG2be5
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:356225522107:runtime/agentcore_runtime3-pdwPXG2be5
+      agent_session_id: b632d066-fc8b-4ec1-b125-9b5cc22ddfd3
     codebuild:
-      project_name: bedrock-agentcore-langgraph_claude_getting_started-builder
-      execution_role: arn:aws:iam::356225522107:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-2292fc8165
+      project_name: bedrock-agentcore-agentcore_runtime3-builder
+      execution_role: arn:aws:iam::356225522107:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-23b2dbc1b7
       source_bucket: bedrock-agentcore-codebuild-sources-356225522107-us-east-1
     authorizer_configuration: null
     oauth_configuration: null

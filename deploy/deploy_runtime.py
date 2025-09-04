@@ -7,7 +7,7 @@ boto_session = Session()
 region = boto_session.region_name
 
 agentcore_runtime = Runtime()
-agent_name = "langgraph_claude_getting_started"
+agent_name = "agentcore_runtime3"
 
 response = agentcore_runtime.configure(
     entrypoint="langgraph_bedrock.py",

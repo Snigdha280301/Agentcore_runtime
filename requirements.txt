@@ -9,3 +9,5 @@ starlette
 uvicorn
 bedrock-agentcore
 bedrock-agentcore-starter-toolkit
+langchain-aws
+langchain-core

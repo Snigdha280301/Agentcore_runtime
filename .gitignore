@@ -71,3 +71,4 @@ agent_runtime_output/
 # ---------------------------
 .DS_Store
 Thumbs.db
+*.yaml

@@ -39,7 +39,7 @@ def weather():
 def create_agent():
     from langchain_aws import ChatBedrock
     llm = ChatBedrock(
-        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         model_kwargs={"temperature": 0.1}
     )
     tools = [calculator, weather]
