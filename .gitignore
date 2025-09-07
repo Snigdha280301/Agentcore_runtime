@@ -1,0 +1,26 @@
+# Environment & secrets
+.env
+.access_token
+.agent_arn
+*.pem
+*.key
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Logs
+*.log
+# Docker
+*.pid
+*.seed
+*.pid.lock
+# Local configs
+bedrock_agentcore.yaml
+docker-compose.override.yml
