@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# OS junk
+.DS_Store
+Thumbs.db
+# Ignore sensitive configs
+gateway.json
+launch.json
+*.yaml
