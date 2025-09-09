@@ -1,78 +1,3 @@
-# # app.py  — Streamlit frontend for AgentCore Runtime
-# # (no local agent, no local tools)
-
-# import warnings
-# warnings.filterwarnings("ignore", message=r".*LangChain agents will continue to be supported.*")
-
-# import os
-# import json
-# import re
-# import streamlit as st
-# from bedrock_agentcore_starter_toolkit import Runtime
-
-# # -------------------- Config --------------------
-# st.set_page_config(page_title="CityAssist 311", page_icon="🏙️", layout="centered")
-# st.title("CityAssist 311 🏙️")
-
-# # Load agent runtime info produced by deploy/deploy_runtime.py
-# LAUNCH_JSON = os.path.join("deploy", "launch_result.json")
-# with open(LAUNCH_JSON, "r") as f:
-#     _lr = json.load(f)
-
-# AGENT_ID = _lr["agent_id"]
-# AWS_REGION = _lr.get("region") or os.getenv("AWS_REGION", "us-east-1")
-
-# rt = Runtime(region=AWS_REGION)
-
-# # (Optional) simple client-side emergency short-circuit
-# _EMERG = r"(heart attack|gun|shots fired|fire in (my|the)|unconscious|not breathing|domestic violence|break[- ]?in|armed|stabbed|car crash with injuries)"
-# def is_emergency(text: str) -> bool:
-#     return bool(re.search(_EMERG, text or "", re.IGNORECASE))
-
-# # -------------------- Session State --------------------
-# if "history" not in st.session_state:
-#     greeting = (
-#         "Hi! 👋 **Welcome to 311 City Services.** How can I help you today?\n\n"
-#         "• **Report an issue** (pothole, streetlight out, missed trash…)\n\n"
-#         "• **Check ticket status** (paste your 8-character ticket ID)\n\n"
-#         "• **Ask about city services** (missed trash, noise, potholes, streetlight etc.)\n\n"
-#     )
-#     st.session_state.history = [("assistant", greeting)]
-
-# # -------------------- Render History --------------------
-# for role, msg in st.session_state.history:
-#     with st.chat_message(role):
-#         st.markdown(msg)
-
-# # -------------------- Chat Input --------------------
-# prompt = st.chat_input("Report an issue, check a ticket, or ask about city services…")
-# if prompt:
-#     # Show user message
-#     with st.chat_message("user"):
-#         st.markdown(prompt)
-#     st.session_state.history.append(("user", prompt))
-
-#     # Optional client-side emergency check
-#     if is_emergency(prompt):
-#         reply = "This sounds like an emergency. Please call **911** immediately."
-#     else:
-#         # Invoke your AgentCore Runtime (SigV4 via your AWS creds).
-#         # If later you add Cognito inbound auth for user-scoped APIs (e.g., Gmail),
-#         # you could forward an ID token via identity_token=... here.
-#         try:
-#             resp = rt.invoke(agent_id=AGENT_ID, payload={"prompt": prompt})
-#             # resp may be a string or a dict depending on model/agent setup
-#             if isinstance(resp, str):
-#                 reply = resp
-#             else:
-#                 reply = resp.get("output") or resp.get("content") or json.dumps(resp)
-#         except Exception as e:
-#             reply = f"Sorry, I hit an error talking to the runtime: `{e}`"
-
-#     # Show assistant message
-#     with st.chat_message("assistant"):
-#         st.markdown(reply)
-#     st.session_state.history.append(("assistant", reply))
 # streamlit_app.py
 import os, json, uuid
 import streamlit as st
@@ -92,17 +17,29 @@ client = boto3.client(
 st.set_page_config(page_title="CityAssist 311", layout="centered")
 st.title("CityAssist 311 🧭")
 
+# ---------------- Session state ----------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    # preload assistant greeting with service info
+    greeting = (
+        "👋 **Welcome to CityAssist 311!**\n\n"
+        "Here’s what I can help you with:\n\n"
+        "• **Report an issue** (pothole, graffiti, broken streetlight, trash pickup…)\n"
+        "• **Check ticket status** (give me your 8-character ticket ID)\n"
+        "• **Ask about city services** (e.g., noise complaints, parking, sanitation)\n\n"
+        "Just type below to get started!"
+    )
+    st.session_state.messages = [{"role": "assistant", "content": greeting}]
 
+# ---------------- Render chat history ----------------
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
+# ---------------- Chat input ----------------
 placeholder = "Report an issue, check a ticket, or ask about city services…"
 if prompt := st.chat_input(placeholder):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -120,7 +57,6 @@ if prompt := st.chat_input(placeholder):
             contentType="application/json",
             accept="application/json",
         )
-        # If your runtime shows a versioned endpoint, include QUALIFIER; otherwise skip it.
         if QUALIFIER:
             kwargs["qualifier"] = QUALIFIER
 

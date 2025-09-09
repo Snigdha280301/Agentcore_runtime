@@ -1,860 +1,7 @@
-# # # # # langgraph_bedrock.py
-# # # # from bedrock_agentcore.runtime import BedrockAgentCoreApp
-# # # # from langchain_aws import ChatBedrock
-# # # # from langchain_core.messages import SystemMessage, HumanMessage
-# # # # import os, re
+import os, json, time, re, logging
+from typing import Any, Dict, List, Annotated, TypedDict, Optional
 
-# # # # MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
-# # # # TEMPERATURE = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
-
-# # # # SYSTEM_PROMPT = """You are CityAssist, a concise, helpful 311 assistant.
-# # # # - If it’s an emergency: reply “Call 911 now.” and stop.
-# # # # - Prefer tools (via Gateway) for: create_ticket, get_ticket_status, search_kb.
-# # # # - Be brief and action-oriented. Do not invent data.
-# # # # """
-
-# # # # EMERG = r"(heart attack|gun|shots fired|fire in (my|the)|unconscious|not breathing|domestic violence|break[- ]?in|armed|stabbed|car crash with injuries)"
-# # # # def is_emergency(t: str) -> bool:
-# # # #     return bool(re.search(EMERG, t or "", re.IGNORECASE))
-
-# # # # LLM = ChatBedrock(model_id=MODEL_ID, model_kwargs={"temperature": TEMPERATURE})
-
-# # # # app = BedrockAgentCoreApp()
-
-# # # # @app.entrypoint
-# # # # def invoke(payload: dict):
-# # # #     text = (payload or {}).get("prompt") or (payload or {}).get("inputText") or ""
-# # # #     text = text.strip()
-# # # #     if not text:
-# # # #         return "Please provide a message."
-# # # #     if is_emergency(text):
-# # # #         return "This sounds like an emergency. Please call 911 immediately."
-
-# # # #     msgs = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=text)]
-# # # #     ai = LLM.invoke(msgs)
-# # # #     return getattr(ai, "content", str(ai))
-
-# # # # if __name__ == "__main__":
-# # # #     app.run()
-# # # # langgraph_bedrock.py
-# # # # Runtime app that binds Gateway (MCP) tools to an LLM in LangGraph.
-
-# # # import os
-# # # import time
-# # # import json
-# # # import asyncio
-# # # import re
-# # # from typing import Any, Dict, List, Annotated, TypedDict, Optional
-
-# # # # replace the old import
-# # # from bedrock_agentcore import BedrockAgentCoreApp
-# # # # (older snippets used from bedrock_agentcore.runtime import BedrockAgentCoreApp;
-# # # # the top-level import above works with the current package)
-# # # # ---- LLM & LangGraph ----
-# # # from langgraph.graph import StateGraph, END
-# # # from langgraph.graph.message import add_messages
-# # # from langgraph.prebuilt import ToolNode
-
-# # # # ---- MCP client (Gateway) ----
-# # # from mcp import ClientSession
-# # # from mcp.client.streamable_http import streamablehttp_client
-
-# # # # ---- AWS Secrets (to fetch Cognito + Gateway config) ----
-# # # import boto3
-
-# # # # =============================
-# # # # Config & helpers
-# # # # =============================
-
-# # # SYSTEM_PROMPT = """
-# # # You are CityAssist, a 311-style non-emergency assistant.
-
-# # # INTENTS → TOOLS
-# # # - Report an issue → call create_ticket_tool
-# # # - Check ticket status → call get_ticket_status_tool
-# # # - Ask about city services → call search_kb_tool
-
-# # # REPORTING
-# # # - Collect Category, Description, Location, Contact Email → then call create_ticket_tool.
-# # # - After creation, return ticket_id and ETA.
-
-# # # STATUS
-# # # - If a valid ticket ID is present, call get_ticket_status_tool. Else, ask for it briefly.
-
-# # # KB
-# # # - For service questions, call search_kb_tool. Then offer to create a ticket.
-
-# # # GUARDRAILS
-# # # - If it’s an emergency, say: "Call 911 now." (don’t call tools)
-# # # - Be concise, polite, and action-oriented. Do not invent data.
-# # # """
-
-# # # EMERGENCY_REGEX = r"(heart attack|gun|shots fired|fire in (my|the)|unconscious|not breathing|domestic violence|break[- ]?in|armed|stabbed|car crash with injuries)"
-# # # def is_emergency(text: str) -> bool:
-# # #     return bool(re.search(EMERGENCY_REGEX, text or "", re.IGNORECASE))
-
-# # # # Where to find the secret (or env fallback)
-# # # GATEWAY_SECRET_NAME = os.getenv("GATEWAY_SECRET_NAME", "agentcore/cityassist311/gateway")
-
-# # # def _load_gateway_cfg() -> Dict[str, str]:
-# # #     """Load gateway_url, token_url, client_id, client_secret from Secrets Manager (or env)."""
-# # #     # env overrides are allowed (handy for local test)
-# # #     env = {
-# # #         "gateway_url": os.getenv("GATEWAY_URL"),
-# # #         "token_url": os.getenv("COGNITO_TOKEN_URL"),
-# # #         "client_id": os.getenv("COGNITO_CLIENT_ID"),
-# # #         "client_secret": os.getenv("COGNITO_CLIENT_SECRET"),
-# # #     }
-# # #     if all(env.values()):
-# # #         return env  # all provided by env
-
-# # #     sm = boto3.client("secretsmanager")
-# # #     val = sm.get_secret_value(SecretId=GATEWAY_SECRET_NAME)["SecretString"]
-# # #     return json.loads(val)
-
-# # # # ------- OAuth2: client_credentials token (cached) -------
-# # # _cached_token: Optional[str] = None
-# # # _token_expiry: float = 0.0
-
-# # # def _fetch_access_token(cfg: Dict[str, str]) -> str:
-# # #     import requests
-# # #     global _cached_token, _token_expiry
-# # #     now = time.time()
-# # #     if _cached_token and now < _token_expiry - 60:
-# # #         return _cached_token
-
-# # #     data = f"grant_type=client_credentials&client_id={cfg['client_id']}&client_secret={cfg['client_secret']}"
-# # #     r = requests.post(cfg["token_url"], data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=10)
-# # #     r.raise_for_status()
-# # #     body = r.json()
-# # #     _cached_token = body["access_token"]
-# # #     _token_expiry = now + int(body.get("expires_in", 3600))
-# # #     return _cached_token
-
-# # # # ------- MCP session singleton (async) -------
-# # # class GatewayMCP:
-# # #     def __init__(self, gateway_url: str):
-# # #         self.gateway_url = gateway_url
-# # #         self._session: Optional[ClientSession] = None
-
-# # #     async def _ensure_session(self, access_token: str) -> ClientSession:
-# # #         if self._session is not None:
-# # #             return self._session
-# # #         # open the streamable HTTP transport with Authorization: Bearer <token>
-# # #         self._rt = await streamablehttp_client(self.gateway_url, headers={"Authorization": f"Bearer {access_token}"}).__aenter__()
-# # #         read_stream, write_stream, _callA = self._rt
-# # #         self._session = ClientSession(read_stream, write_stream)
-# # #         await self._session.__aenter__()
-# # #         await self._session.initialize()
-# # #         return self._session
-
-# # #     async def list_tools(self, access_token: str):
-# # #         sess = await self._ensure_session(access_token)
-# # #         # paginate
-# # #         tools, cursor = [], True
-# # #         while cursor:
-# # #             next_cursor = None if cursor is True else cursor
-# # #             resp = await sess.list_tools(next_cursor)
-# # #             tools.extend(resp.tools or [])
-# # #             cursor = resp.nextCursor
-# # #         return tools
-
-# # #     async def call_tool(self, access_token: str, name: str, arguments: Dict[str, Any]) -> str:
-# # #         sess = await self._ensure_session(access_token)
-# # #         resp = await sess.call_tool(name, arguments)
-# # #         # Convert MCP ToolResponse to a string the LLM can read
-# # #         # Each result item may have .content with text; join them.
-# # #         out_parts: List[str] = []
-# # #         for item in resp.content or []:
-# # #             # text content is under item.text or item.type=="text"
-# # #             txt = getattr(item, "text", None) or getattr(item, "data", None) or str(item)
-# # #             if txt:
-# # #                 out_parts.append(str(txt))
-# # #         return "\n".join(out_parts) if out_parts else json.dumps(resp.model_dump())
-
-# # # # ------- Turn MCP tools into LangChain Tools -------
-# # # def build_langchain_tools_from_gateway(gateway: GatewayMCP, cfg: Dict[str, str]) -> List[Tool]:
-# # #     access = _fetch_access_token(cfg)
-# # #     tools_meta = asyncio.run(gateway.list_tools(access))
-
-# # #     lc_tools: List[Tool] = []
-# # #     for tm in tools_meta:
-# # #         name = getattr(tm, "name", None) or getattr(tm, "tool_name", "tool")
-# # #         desc = getattr(tm, "description", "") or "Gateway tool"
-
-# # #         async def _acall(params: Dict[str, Any], _name=name):
-# # #             token = _fetch_access_token(cfg)  # refresh if needed
-# # #             return await gateway.call_tool(token, _name, params or {})
-
-# # #         # wrap async into sync for LangChain Tool
-# # #         def _call(**kwargs):
-# # #             return asyncio.run(_acall(kwargs))
-
-# # #         lc_tools.append(Tool(name=name, description=desc, func=_call))
-# # #     return lc_tools
-
-# # # # =============================
-# # # # LangGraph app
-# # # # =============================
-
-# # # class ChatState(TypedDict):
-# # #     messages: Annotated[List[BaseMessage], add_messages]
-
-# # # def build_graph(lc_tools: List[Tool]):
-# # #     llm = ChatBedrock(
-# # #         model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-# # #         model_kwargs={"temperature": 0.0},
-# # #     )
-# # #     llm_tools = llm.bind_tools(lc_tools)
-
-# # #     def chatbot(state: ChatState):
-# # #         msgs = state["messages"]
-# # #         if not msgs or not isinstance(msgs[0], SystemMessage):
-# # #             msgs = [SystemMessage(content=SYSTEM_PROMPT)] + msgs
-# # #         ai = llm_tools.invoke(msgs)
-# # #         return {"messages": [ai]}
-
-# # #     def needs_tools(state: ChatState) -> str:
-# # #         last = state["messages"][-1]
-# # #         return "tools" if getattr(last, "tool_calls", None) else "end"
-
-# # #     g = StateGraph(ChatState)
-# # #     g.add_node("chatbot", chatbot)
-# # #     g.add_node("tools", ToolNode(lc_tools))
-# # #     g.add_conditional_edges("chatbot", needs_tools, {"tools": "tools", "end": END})
-# # #     g.add_edge("tools", "chatbot")
-# # #     g.set_entry_point("chatbot")
-# # #     return g.compile()
-
-# # # # =============================
-# # # # AgentCore app entrypoint
-# # # # =============================
-
-# # # app = BedrockAgentCoreApp()
-
-# # # # Build tools & graph once at cold start
-# # # _cfg = _load_gateway_cfg()
-# # # _gateway = GatewayMCP(_cfg["gateway_url"])
-# # # _lc_tools = build_langchain_tools_from_gateway(_gateway, _cfg)
-# # # _graph = build_graph(_lc_tools)
-
-# # # @app.entrypoint
-# # # def invoke(payload: Dict[str, Any]):
-# # #     user_input = (payload or {}).get("prompt") or (payload or {}).get("inputText") or ""
-# # #     if not user_input.strip():
-# # #         return "Please provide a message."
-# # #     if is_emergency(user_input):
-# # #         return "This sounds like an emergency. Please call 911 immediately."
-# # #     out = _graph.invoke({"messages": [HumanMessage(content=user_input)]})
-# # #     # return last assistant message
-# # #     for m in reversed(out["messages"]):
-# # #         if getattr(m, "role", None) == "assistant" or getattr(m, "type", None) == "ai":
-# # #             return m.content
-# # #     return "Sorry, I didn’t catch that."
-
-# # # if __name__ == "__main__":
-# # #     app.run()
-# # # langgraph_bedrock.py
-# # # Runtime app that binds Gateway (MCP) tools to an LLM in LangGraph.
-# # # langgraph_bedrock.py
-# # # Runtime app that binds Gateway (MCP) tools to an LLM in LangGraph.
-
-# # import os
-# # import time
-# # import json
-# # import asyncio
-# # import re
-# # from typing import Any, Dict, List, Annotated, TypedDict, Optional
-
-# # # ----- AgentCore app -----
-# # from bedrock_agentcore.runtime import BedrockAgentCoreApp
-
-# # # ----- LangChain / LangGraph -----
-# # from langchain_aws import ChatBedrock
-# # from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
-# # from langchain_core.tools import Tool
-# # from langgraph.graph import StateGraph, END
-# # from langgraph.graph.message import add_messages
-# # from langgraph.prebuilt import ToolNode
-
-# # # ----- MCP client (Gateway) -----
-# # from mcp import ClientSession
-# # from mcp.client.streamable_http import streamablehttp_client
-
-# # # ----- AWS Secrets (to fetch Cognito + Gateway config) -----
-# # import boto3
-# # import requests
-# # from botocore.exceptions import ClientError
-
-
-# # # =============================
-# # # Config & helpers
-# # # =============================
-
-# # SYSTEM_PROMPT = """
-# # You are CityAssist, a 311-style non-emergency assistant.
-
-# # INTENTS → TOOLS
-# # - Report an issue → call create_ticket_tool
-# # - Check ticket status → call get_ticket_status_tool
-# # - Ask about city services → call search_kb_tool
-
-# # REPORTING
-# # - Collect Category, Description, Location, Contact Email → then call create_ticket_tool.
-# # - After creation, return ticket_id and ETA.
-
-# # STATUS
-# # - If a valid ticket ID is present, call get_ticket_status_tool. Else, ask for it briefly.
-
-# # KB
-# # - For service questions, call search_kb_tool. Then offer to create a ticket.
-
-# # GUARDRAILS
-# # - If it’s an emergency, say: "Call 911 now." (don’t call tools)
-# # - Be concise, polite, and action-oriented. Do not invent data.
-# # """
-
-# # EMERGENCY_REGEX = r"(heart attack|gun|shots fired|fire in (my|the)|unconscious|not breathing|domestic violence|break[- ]?in|armed|stabbed|car crash with injuries)"
-# # def is_emergency(text: str) -> bool:
-# #     return bool(re.search(EMERGENCY_REGEX, text or "", re.IGNORECASE))
-
-
-# # # Where to find the secret (or env fallback)
-# # GATEWAY_SECRET_NAME = os.getenv("GATEWAY_SECRET_NAME", "agentcore/cityassist311/gateway")
-
-
-# # def _load_gateway_cfg() -> Dict[str, str]:
-# #     """
-# #     Load config with keys:
-# #       - gateway_url: https://<gateway-id>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp
-# #       - token_url:   https://<cognito-domain>.auth.<region>.amazoncognito.com/oauth2/token
-# #       - client_id, client_secret
-# #     Env vars override the secret if all present.
-# #     """
-# #     env = {
-# #         "gateway_url": os.getenv("GATEWAY_URL"),
-# #         "token_url": os.getenv("COGNITO_TOKEN_URL"),
-# #         "client_id": os.getenv("COGNITO_CLIENT_ID"),
-# #         "client_secret": os.getenv("COGNITO_CLIENT_SECRET"),
-# #     }
-# #     if all(env.values()):
-# #         return env
-
-# #     sm = boto3.client("secretsmanager")
-# #     val = sm.get_secret_value(SecretId=GATEWAY_SECRET_NAME)["SecretString"]
-# #     cfg = json.loads(val)
-
-# #     # Ensure we have the token_url (some store discovery_url by mistake)
-# #     if not cfg.get("token_url"):
-# #         raise ValueError("Secret must contain token_url (…/oauth2/token).")
-# #     for k in ("gateway_url", "client_id", "client_secret"):
-# #         if not cfg.get(k):
-# #             raise ValueError(f"Secret missing required key: {k}")
-# #     return cfg
-
-
-# # # ------- OAuth2: client_credentials token (cached) -------
-# # _cached_token: Optional[str] = None
-# # _token_expiry: float = 0.0
-
-# # def _fetch_access_token(cfg: Dict[str, str]) -> str:
-# #     """Fetch (and cache) an OAuth2 client_credentials token."""
-# #     global _cached_token, _token_expiry
-# #     now = time.time()
-# #     if _cached_token and now < _token_expiry - 60:
-# #         return _cached_token
-
-# #     r = requests.post(
-# #         cfg["token_url"],
-# #         data={
-# #             "grant_type": "client_credentials",
-# #             "client_id": cfg["client_id"],
-# #             "client_secret": cfg["client_secret"],
-# #         },
-# #         headers={"Content-Type": "application/x-www-form-urlencoded"},
-# #         timeout=15,
-# #     )
-# #     if r.status_code != 200:
-# #         raise RuntimeError(f"Token request failed: {r.status_code} {r.text}")
-# #     body = r.json()
-# #     _cached_token = body["access_token"]
-# #     _token_expiry = now + int(body.get("expires_in", 3600))
-# #     return _cached_token
-
-
-# # # ------- MCP session singleton (async) -------
-# # # (Renamed to avoid any name shadowing that caused `GatewayMCP() takes no arguments`)
-# # class GatewayMcpClient:
-# #     def __init__(self, gateway_url: str):
-# #         self.gateway_url = gateway_url
-# #         self._session: Optional[ClientSession] = None
-# #         self._transport_cm = None  # async context manager
-
-# #     async def _ensure_session(self, access_token: str) -> ClientSession:
-# #         if self._session:
-# #             return self._session
-# #         try:
-# #             self._transport_cm = streamablehttp_client(
-# #                 self.gateway_url,
-# #                 headers={"Authorization": f"Bearer {access_token}"},
-# #             )
-# #             read_stream, write_stream, _ = await self._transport_cm.__aenter__()
-# #             self._session = ClientSession(read_stream, write_stream)
-# #             await self._session.__aenter__()
-# #             await self._session.initialize()
-# #             return self._session
-# #         except Exception as e:
-# #             raise RuntimeError(
-# #                 f"MCP handshake failed to {self.gateway_url}. "
-# #                 f"Check token_url/credentials and Gateway URL. Root cause: {e}"
-# #             )
-
-# #     async def list_tools(self, access_token: str):
-# #         sess = await self._ensure_session(access_token)
-# #         tools, cursor = [], True
-# #         while cursor:
-# #             next_cursor = None if cursor is True else cursor
-# #             resp = await sess.list_tools(next_cursor)
-# #             tools.extend(resp.tools or [])
-# #             cursor = resp.nextCursor
-# #         return tools
-
-# #     async def call_tool(self, access_token: str, name: str, arguments: Dict[str, Any]) -> str:
-# #         sess = await self._ensure_session(access_token)
-# #         resp = await sess.call_tool(name, arguments or {})
-# #         # Convert MCP ToolResponse content to text
-# #         parts: List[str] = []
-# #         for item in resp.content or []:
-# #             txt = getattr(item, "text", None) or getattr(item, "data", None) or str(item)
-# #             if txt:
-# #                 parts.append(str(txt))
-# #         return "\n".join(parts) if parts else json.dumps(resp.model_dump())
-
-
-# # def _list_tools_with_retry(gw: GatewayMcpClient, access: str, retries: int = 3, base_delay: float = 1.5) -> list:
-# #     for i in range(retries):
-# #         try:
-# #             return asyncio.run(gw.list_tools(access))
-# #         except Exception:
-# #             if i == retries - 1:
-# #                 raise
-# #             time.sleep(base_delay * (i + 1))  # simple backoff for 429s etc.
-
-
-# # # ------- Turn MCP tools into LangChain Tools -------
-# # def build_langchain_tools_from_gateway(gateway: GatewayMcpClient, cfg: Dict[str, str]) -> List[Tool]:
-# #     access = _fetch_access_token(cfg)
-# #     tools_meta = _list_tools_with_retry(gateway, access)
-
-# #     lc_tools: List[Tool] = []
-
-# #     for tm in tools_meta:
-# #         name = getattr(tm, "name", None) or getattr(tm, "tool_name", "tool")
-# #         desc = getattr(tm, "description", "") or "Gateway tool"
-
-# #         async def _acall(params: Dict[str, Any], _name=name):
-# #             token = _fetch_access_token(cfg)  # refresh if needed
-# #             return await gateway.call_tool(token, _name, params or {})
-
-# #         def _call(**kwargs):
-# #             return asyncio.run(_acall(kwargs))
-
-# #         lc_tools.append(Tool(name=name, description=desc, func=_call))
-
-# #     return lc_tools
-
-
-# # # =============================
-# # # LangGraph app
-# # # =============================
-
-# # class ChatState(TypedDict):
-# #     messages: Annotated[List[BaseMessage], add_messages]
-
-# # def build_graph(lc_tools: List[Tool]):
-# #     llm = ChatBedrock(
-# #         model_id=os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
-# #         model_kwargs={"temperature": float(os.getenv("MODEL_TEMPERATURE", "0.0"))},
-# #     )
-# #     llm_tools = llm.bind_tools(lc_tools)
-
-# #     def chatbot(state: ChatState):
-# #         msgs = state["messages"]
-# #         if not msgs or not isinstance(msgs[0], SystemMessage):
-# #             msgs = [SystemMessage(content=SYSTEM_PROMPT)] + msgs
-# #         ai = llm_tools.invoke(msgs)
-# #         return {"messages": [ai]}
-
-# #     def needs_tools(state: ChatState) -> str:
-# #         last = state["messages"][-1]
-# #         return "tools" if getattr(last, "tool_calls", None) else "end"
-
-# #     g = StateGraph(ChatState)
-# #     g.add_node("chatbot", chatbot)
-# #     g.add_node("tools", ToolNode(lc_tools))
-# #     g.add_conditional_edges("chatbot", needs_tools, {"tools": "tools", "end": END})
-# #     g.add_edge("tools", "chatbot")
-# #     g.set_entry_point("chatbot")
-# #     return g.compile()
-
-
-# # # =============================
-# # # AgentCore app entrypoint
-# # # =============================
-
-# # app = BedrockAgentCoreApp()
-
-# # # ---- Build tools & graph once at cold start ----
-# # _cfg = _load_gateway_cfg()
-# # _gateway = GatewayMcpClient(_cfg["gateway_url"])
-
-# # try:
-# #     _lc_tools = build_langchain_tools_from_gateway(_gateway, _cfg)
-# # except Exception as e:
-# #     # If Gateway is momentarily rate limited or credentials misconfigured,
-# #     # start without tools so the agent can still answer text gracefully.
-# #     _lc_tools = []
-# #     # (The error will be visible in CloudWatch logs.)
-# #     print(f"[WARN] Failed to load Gateway tools at startup: {e}")
-
-# # _graph = build_graph(_lc_tools)
-
-
-# # @app.entrypoint
-# # def invoke(payload: Dict[str, Any]):
-# #     user_input = (payload or {}).get("prompt") or (payload or {}).get("inputText") or ""
-# #     user_input = (user_input or "").strip()
-# #     if not user_input:
-# #         return "Please provide a message."
-# #     if is_emergency(user_input):
-# #         return "This sounds like an emergency. Please call 911 immediately."
-
-# #     out = _graph.invoke({"messages": [HumanMessage(content=user_input)]})
-# #     # return last assistant message
-# #     for m in reversed(out["messages"]):
-# #         if getattr(m, "role", None) == "assistant" or getattr(m, "type", None) == "ai":
-# #             return m.content
-# #     return "Sorry, I didn’t catch that."
-
-
-# # if __name__ == "__main__":
-# #     app.run()
-# # langgraph_bedrock.py
-# # Bedrock AgentCore runtime that binds Gateway (MCP) tools to an LLM via LangGraph.
-
-# import os
-# import time
-# import json
-# import re
-# from typing import Any, Dict, List, Annotated, TypedDict, Optional, Callable
-
-# # ----- AgentCore app -----
-# from bedrock_agentcore.runtime import BedrockAgentCoreApp
-
-# # ----- LangChain / LangGraph -----
-# from langchain_aws import ChatBedrock
-# from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
-# from langchain_core.tools import Tool
-# from langgraph.graph import StateGraph, END
-# from langgraph.graph.message import add_messages
-# from langgraph.prebuilt import ToolNode
-
-# # ----- MCP client (Gateway) -----
-# from mcp import ClientSession
-# from mcp.client.streamable_http import streamablehttp_client
-
-# # ----- AWS / HTTP -----
-# import boto3
-# import requests
-# from botocore.exceptions import ClientError
-# import anyio
-
-
-# # =============================
-# # Config & helpers
-# # =============================
-
-# SYSTEM_PROMPT = """
-# You are CityAssist, a 311-style non-emergency assistant.
-
-# INTENTS → TOOLS
-# - Report an issue → call create_ticket_tool
-# - Check ticket status → call get_ticket_status_tool
-# - Ask about city services → call search_kb_tool
-
-# REPORTING
-# - Collect Category, Description, Location, Contact Email → then call create_ticket_tool.
-# - After creation, return ticket_id and ETA.
-
-# STATUS
-# - If a valid ticket ID is present, call get_ticket_status_tool. Else, ask for it briefly.
-
-# KB
-# - For service questions, call search_kb_tool. Then offer to create a ticket.
-
-# GUARDRAILS
-# - If it’s an emergency, say: "Call 911 now." (don’t call tools)
-# - Be concise, polite, and action-oriented. Do not invent data.
-# """
-
-# EMERGENCY_REGEX = r"(heart attack|gun|shots fired|fire in (my|the)|unconscious|not breathing|domestic violence|break[- ]?in|armed|stabbed|car crash with injuries)"
-# def is_emergency(text: str) -> bool:
-#     return bool(re.search(EMERGENCY_REGEX, text or "", re.IGNORECASE))
-
-
-# GATEWAY_SECRET_NAME = os.getenv("GATEWAY_SECRET_NAME", "agentcore/cityassist311/gateway")
-
-# def _load_gateway_cfg() -> Dict[str, str]:
-#     """
-#     Load config with keys:
-#       - gateway_url: https://<gateway-id>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp
-#       - token_url:   https://<cognito-domain>.auth.<region>.amazoncognito.com/oauth2/token
-#       - client_id, client_secret
-#     Env vars override the secret if all present.
-#     """
-#     env = {
-#         "gateway_url": os.getenv("GATEWAY_URL"),
-#         "token_url": os.getenv("COGNITO_TOKEN_URL"),
-#         "client_id": os.getenv("COGNITO_CLIENT_ID"),
-#         "client_secret": os.getenv("COGNITO_CLIENT_SECRET"),
-#     }
-#     if all(env.values()):
-#         return env
-
-#     sm = boto3.client("secretsmanager")
-#     val = sm.get_secret_value(SecretId=GATEWAY_SECRET_NAME)["SecretString"]
-#     cfg = json.loads(val)
-
-#     for k in ("gateway_url", "token_url", "client_id", "client_secret"):
-#         if not cfg.get(k):
-#             raise ValueError(f"Secret missing required key: {k}")
-#     if not cfg["token_url"].endswith("/oauth2/token"):
-#         raise ValueError("token_url must be the Cognito app client domain '/oauth2/token' endpoint.")
-#     return cfg
-
-
-# # ------- OAuth2: client_credentials token (cached) -------
-# _cached_token: Optional[str] = None
-# _token_expiry: float = 0.0
-
-# def _fetch_access_token(cfg: Dict[str, str]) -> str:
-#     global _cached_token, _token_expiry
-#     now = time.time()
-#     if _cached_token and now < _token_expiry - 60:
-#         return _cached_token
-
-#     r = requests.post(
-#         cfg["token_url"],
-#         data={
-#             "grant_type": "client_credentials",
-#             "client_id": cfg["client_id"],
-#             "client_secret": cfg["client_secret"],
-#         },
-#         headers={"Content-Type": "application/x-www-form-urlencoded"},
-#         timeout=15,
-#     )
-#     if r.status_code != 200:
-#         raise RuntimeError(f"Token request failed: {r.status_code} {r.text}")
-#     body = r.json()
-#     _cached_token = body["access_token"]
-#     _token_expiry = now + int(body.get("expires_in", 3600))
-#     return _cached_token
-
-
-# # =============================
-# # Short-lived MCP client (per call)
-# # =============================
-
-# class GatewayMcpClient:
-#     """Open/use/close MCP transport + session *inside the same task* per call to avoid cancel-scope issues."""
-
-#     def __init__(self, gateway_url: str):
-#         self.gateway_url = gateway_url
-
-#     async def _with_session(self, access_token: str, fn: Callable[[ClientSession], Any]):
-#         # Each call creates and closes its own transport + session
-#         async with streamablehttp_client(
-#             self.gateway_url,
-#             headers={"Authorization": f"Bearer {access_token}"},
-#         ) as (read_stream, write_stream, _):
-#             async with ClientSession(read_stream, write_stream) as sess:
-#                 await sess.initialize()
-#                 return await fn(sess)
-
-#     async def list_tools(self, access_token: str):
-#         async def _do(sess: ClientSession):
-#             tools, cursor = [], True
-#             while cursor:
-#                 next_cursor = None if cursor is True else cursor
-#                 resp = await sess.list_tools(next_cursor)
-#                 tools.extend(resp.tools or [])
-#                 cursor = resp.nextCursor
-#             return tools
-
-#         # Retry for transient 429s
-#         delay = 0.7
-#         for attempt in range(4):
-#             try:
-#                 return await self._with_session(access_token, _do)
-#             except Exception as e:
-#                 msg = str(e)
-#                 if "429" in msg and attempt < 3:
-#                     await anyio.sleep(delay)
-#                     delay *= 1.8
-#                     continue
-#                 raise
-
-#     async def call_tool(self, access_token: str, name: str, arguments: Dict[str, Any]) -> str:
-#         async def _do(sess: ClientSession):
-#             resp = await sess.call_tool(name, arguments or {})
-#             parts: List[str] = []
-#             for item in resp.content or []:
-#                 txt = getattr(item, "text", None) or getattr(item, "data", None) or str(item)
-#                 if txt:
-#                     parts.append(str(txt))
-#             return "\n".join(parts) if parts else json.dumps(resp.model_dump())
-
-#         # Retry for transient 429s
-#         delay = 0.7
-#         for attempt in range(4):
-#             try:
-#                 return await self._with_session(access_token, _do)
-#             except Exception as e:
-#                 msg = str(e)
-#                 if "429" in msg and attempt < 3:
-#                     await anyio.sleep(delay)
-#                     delay *= 1.8
-#                     continue
-#                 raise
-
-
-# def _arun(coro_fn, *args, **kwargs):
-#     """Run an async function with anyio.run, keeping cancel scopes in one task."""
-#     async def runner():
-#         return await coro_fn(*args, **kwargs)
-#     return anyio.run(runner)
-
-
-# def _list_tools_with_retry(gw: GatewayMcpClient, access: str) -> list:
-#     # outer retry for initialization-time hiccups
-#     delay = 1.0
-#     for attempt in range(3):
-#         try:
-#             return _arun(gw.list_tools, access)
-#         except Exception:
-#             if attempt == 2:
-#                 raise
-#             time.sleep(delay)
-#             delay *= 1.7
-
-
-# # ------- Wrap MCP tools for LangChain -------
-# def build_langchain_tools_from_gateway(gateway: GatewayMcpClient, cfg: Dict[str, str]) -> List[Tool]:
-#     access = _fetch_access_token(cfg)
-#     tools_meta = _list_tools_with_retry(gateway, access)
-
-#     lc_tools: List[Tool] = []
-
-#     for tm in tools_meta:
-#         name = getattr(tm, "name", None) or getattr(tm, "tool_name", "tool")
-#         desc = getattr(tm, "description", "") or "Gateway tool"
-
-#         def _call_factory(tool_name: str):
-#             def _call(**kwargs):
-#                 token = _fetch_access_token(cfg)  # refresh if needed
-#                 return _arun(gateway.call_tool, token, tool_name, kwargs or {})
-#             return _call
-
-#         lc_tools.append(Tool(name=name, description=desc, func=_call_factory(name)))
-
-#     return lc_tools
-
-
-# # =============================
-# # LangGraph app
-# # =============================
-
-# class ChatState(TypedDict):
-#     messages: Annotated[List[BaseMessage], add_messages]
-
-# def build_graph(lc_tools: List[Tool]):
-#     llm = ChatBedrock(
-#         model_id=os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
-#         model_kwargs={"temperature": float(os.getenv("MODEL_TEMPERATURE", "0.0"))},
-#     )
-#     llm_tools = llm.bind_tools(lc_tools)
-
-#     def chatbot(state: ChatState):
-#         msgs = state["messages"]
-#         if not msgs or not isinstance(msgs[0], SystemMessage):
-#             msgs = [SystemMessage(content=SYSTEM_PROMPT)] + msgs
-#         ai = llm_tools.invoke(msgs)
-#         return {"messages": [ai]}
-
-#     def needs_tools(state: ChatState) -> str:
-#         last = state["messages"][-1]
-#         return "tools" if getattr(last, "tool_calls", None) else "end"
-
-#     g = StateGraph(ChatState)
-#     g.add_node("chatbot", chatbot)
-#     g.add_node("tools", ToolNode(lc_tools))
-#     g.add_conditional_edges("chatbot", needs_tools, {"tools": "tools", "end": END})
-#     g.add_edge("tools", "chatbot")
-#     g.set_entry_point("chatbot")
-#     return g.compile()
-
-
-# # =============================
-# # AgentCore app entrypoint
-# # =============================
-
-# app = BedrockAgentCoreApp()
-
-# # Build tools & graph once at cold start (no long-lived async state)
-# _cfg = _load_gateway_cfg()
-# _gateway = GatewayMcpClient(_cfg["gateway_url"])
-
-# try:
-#     _lc_tools = build_langchain_tools_from_gateway(_gateway, _cfg)
-# except Exception as e:
-#     # Start without tools if Gateway discovery fails; logs will show the root cause.
-#     print(f"[WARN] Failed to load Gateway tools at startup: {e}")
-#     _lc_tools = []
-
-# _graph = build_graph(_lc_tools)
-
-
-# @app.entrypoint
-# def invoke(payload: Dict[str, Any]):
-#     user_input = (payload or {}).get("prompt") or (payload or {}).get("inputText") or ""
-#     user_input = (user_input or "").strip()
-#     if not user_input:
-#         return "Please provide a message."
-#     if is_emergency(user_input):
-#         return "This sounds like an emergency. Please call 911 immediately."
-
-#     out = _graph.invoke({"messages": [HumanMessage(content=user_input)]})
-#     for m in reversed(out["messages"]):
-#         if getattr(m, "role", None) == "assistant" or getattr(m, "type", None) == "ai":
-#             return m.content
-#     return "Sorry, I didn’t catch that."
-
-
-# if __name__ == "__main__":
-#     app.run()
-# langgraph_bedrock.py
-# Bedrock AgentCore runtime that binds Gateway (MCP) tools to an LLM via LangGraph
-# - Static tool binding (no list_tools) to avoid 429 on discovery
-# - Pretty result formatting for get_ticket_status/create_ticket
-# - Extra logging so you can see what's going on in CloudWatch
-
-import os
-import time
-import json
-import re
-from typing import Any, Dict, List, Annotated, TypedDict, Optional, Callable
-
-# ----- AgentCore app -----
+# ----- AgentCore runtime -----
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 # ----- LangChain / LangGraph -----
@@ -865,93 +12,96 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-# ----- MCP client (Gateway) -----
+# ----- MCP HTTP client -----
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client  # <- correct name
+from mcp.client.streamable_http import streamablehttp_client
 
-# ----- AWS / HTTP -----
+# ----- AWS / HTTP / Async -----
 import boto3
 import requests
 import anyio
 
 
 # =============================
-# Config & helpers
+# Logging
 # =============================
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+log = logging.getLogger("cityassist311")
 
+
+# =============================
+# System Prompt
+# =============================
 SYSTEM_PROMPT = """
-You are CityAssist, a 311-style non-emergency assistant.
+You are CityAssist, a city 311-style non-emergency assistant.  
 
-YOU HAVE THESE TOOLS (via Gateway MCP) — CALL THEM WHEN RELEVANT:
-- create_ticket_tool → creates a new ticket
-  args: { category: string, description: string, location: string, contact_email: string }
+INTENTS → TOOLS
+- Report an issue → call create_ticket_tool
+- Check ticket status → call get_ticket_status_tool
+- Ask about city services → call search_kb_tool
 
-- get_ticket_status_tool → gets the status/details for a ticket
-  args: { ticket_id: string }
+REPORTING
+- To create ANY ticket, collect exactly FOUR fields, one at a time:
+  1) Category
+  2) Description
+  3) Address (street address or landmark)
+  4) Contact Email
+- Once all are provided, call create_ticket_tool and return confirmation.
 
-- search_kb_tool → searches the city knowledge base
-  args: { query: string }
+STATUS
+- If user provides an 8-char ticket ID, call get_ticket_status_tool and summarize status.
+- If no ID, ask briefly.
 
-- send_email_tool → sends a confirmation/notice email
-  args: { to_email: string, category: string, description: string, ticket_id?: string }
-
-ROUTING RULES
-- If the user gives a ticket id (like "6e63bbbe"), CALL get_ticket_status_tool exactly once with that id.
-- If the user wants to report something, collect {category, description, location, contact_email} and CALL create_ticket_tool.
-- For service questions, CALL search_kb_tool first; summarize briefly; offer to create a ticket if appropriate.
-- Do NOT apologize for “system errors” if a tool exists; just try the tool. If a tool call fails, return a short helpful message.
-
-OUTPUT STYLE
-- Be concise and action-oriented. Do NOT show raw JSON.
-- For ticket status, summarize like:
-  "Ticket ID: …  Status: …  Dept: …  ETA: …  Location: …  Description: …  Last Updated: …"
-- If any fields are missing, omit them gracefully.
+KNOWLEDGE BASE
+- For service questions, call search_kb_tool with user’s text. Summarize and offer ticket creation.
 
 GUARDRAILS
-- If it’s an emergency: reply exactly "Call 911 now." and stop.
+- If it’s an emergency: reply "Call 911 now." and stop.
+- One tool per user turn, wait for tool response before another.
+- Never loop endlessly. If a required field is ignored, explain why it’s required and stop.
+- Never reset to greeting mid-convo.
 """
 
-EMERGENCY_REGEX = r"(heart attack|gun|shots fired|fire in (my|the)|unconscious|not breathing|domestic violence|break[- ]?in|armed|stabbed|car crash with injuries)"
+
+# =============================
+# Helpers
+# =============================
+_EMERG_RX = r"(heart attack|gun|fire|shots fired|unconscious|stabbed|domestic violence|car crash)"
+_HEXLIKE = re.compile(r"^[0-9a-fA-F-]{6,64}$")
+
 def is_emergency(text: str) -> bool:
-    return bool(re.search(EMERGENCY_REGEX, text or "", re.IGNORECASE))
+    return bool(re.search(_EMERG_RX, text or "", re.IGNORECASE))
 
-
-GATEWAY_SECRET_NAME = os.getenv("GATEWAY_SECRET_NAME", "agentcore/cityassist311/gateway")
-
-def _load_gateway_cfg() -> Dict[str, str]:
-    env = {
+def load_gateway_cfg() -> Dict[str, str]:
+    secret_name = os.getenv("GATEWAY_SECRET_NAME", "agentcore/cityassist311/gateway")
+    cfg = {
         "gateway_url": os.getenv("GATEWAY_URL"),
         "token_url": os.getenv("COGNITO_TOKEN_URL"),
         "client_id": os.getenv("COGNITO_CLIENT_ID"),
         "client_secret": os.getenv("COGNITO_CLIENT_SECRET"),
     }
-    if all(env.values()):
-        print(f"[CFG] Loaded Gateway/Cognito config from environment.")
-        return env
-
+    if all(cfg.values()):
+        log.info("[CFG] Loaded Gateway/Cognito config from environment.")
+        return cfg
     sm = boto3.client("secretsmanager")
-    val = sm.get_secret_value(SecretId=GATEWAY_SECRET_NAME)["SecretString"]
+    val = sm.get_secret_value(SecretId=secret_name)["SecretString"]
     cfg = json.loads(val)
-    print(f"[CFG] Loaded Gateway/Cognito config from Secrets Manager: {GATEWAY_SECRET_NAME}")
-
-    for k in ("gateway_url", "token_url", "client_id", "client_secret"):
-        if not cfg.get(k):
-            raise ValueError(f"Secret missing required key: {k}")
-    if not cfg["token_url"].endswith("/oauth2/token"):
-        raise ValueError("token_url must end with '/oauth2/token'.")
+    log.info(f"[CFG] Loaded Gateway/Cognito config from Secrets Manager: {secret_name}")
     return cfg
 
 
-# ------- OAuth2: client_credentials token (cached) -------
-_cached_token: Optional[str] = None
-_token_expiry: float = 0.0
+# =============================
+# OAuth2 token cache
+# =============================
+_token: Optional[str] = None
+_expiry: float = 0.0
 
-def _fetch_access_token(cfg: Dict[str, str]) -> str:
-    global _cached_token, _token_expiry
+def fetch_token(cfg: Dict[str, str]) -> str:
+    global _token, _expiry
     now = time.time()
-    if _cached_token and now < _token_expiry - 60:
-        return _cached_token
-
+    if _token and now < _expiry - 60:
+        return _token
     r = requests.post(
         cfg["token_url"],
         data={
@@ -962,255 +112,261 @@ def _fetch_access_token(cfg: Dict[str, str]) -> str:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=15,
     )
-    if r.status_code != 200:
-        raise RuntimeError(f"Token request failed: {r.status_code} {r.text}")
+    r.raise_for_status()
     body = r.json()
-    _cached_token = body["access_token"]
-    _token_expiry = now + int(body.get("expires_in", 3600))
-    return _cached_token
+    _token, _expiry = body["access_token"], now + int(body.get("expires_in", 3600))
+    log.info("[AUTH] Obtained new access token; expires_in=%ss", body.get("expires_in", 3600))
+    return _token
 
 
 # =============================
-# MCP helpers
+# MCP Gateway Client
 # =============================
-
 class GatewayMcpClient:
-    """Short-lived per-call MCP client (avoids cancel-scope/TaskGroup issues)."""
-    def __init__(self, gateway_url: str):
-        self.gateway_url = gateway_url
+    def __init__(self, url: str):
+        self.url = url
 
-    async def _with_session(self, access_token: str, fn: Callable[[ClientSession], Any]):
-        async with streamablehttp_client(
-            self.gateway_url, headers={"Authorization": f"Bearer {access_token}"}
-        ) as (read_stream, write_stream, _):
-            async with ClientSession(read_stream, write_stream) as sess:
+    async def _with_session(self, token: str, fn):
+        async with streamablehttp_client(self.url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+            async with ClientSession(r, w) as sess:
                 await sess.initialize()
                 return await fn(sess)
 
-    async def call_tool(self, access_token: str, name: str, arguments: Dict[str, Any]) -> str:
-        async def _do(sess: ClientSession):
-            resp = await sess.call_tool(name, arguments or {})
-            parts: List[str] = []
-            for item in resp.content or []:
-                txt = getattr(item, "text", None) or getattr(item, "data", None) or str(item)
-                if txt:
-                    parts.append(str(txt))
-            return "\n".join(parts) if parts else json.dumps(resp.model_dump())
+    async def call_tool(self, token: str, name: str, args: Dict[str, Any]):
+        async def _run(sess: ClientSession):
+            resp = await sess.call_tool(name, args or {})
+            parts = [getattr(c, "text", None) or str(c) for c in resp.content or []]
+            return "\n".join(p for p in parts if p)
 
-        # Retry 429 a few times
-        delay = 0.7
-        for attempt in range(4):
+        delay = 0.5
+        max_attempts = 4
+        for attempt in range(1, max_attempts + 1):
             try:
-                return await self._with_session(access_token, _do)
+                log.info("[MCP] Calling tool '%s' with args=%s (attempt %d/%d)", name, args, attempt, max_attempts)
+                result = await self._with_session(token, _run)
+                log.info("[MCP] Tool '%s' succeeded on attempt %d", name, attempt)
+                return result
             except Exception as e:
-                msg = str(e)
-                if "429" in msg and attempt < 3:
+                s = str(e)
+                if "429" in s and attempt < max_attempts:
+                    log.warning("[MCP][429] Tool '%s' throttled; retrying in %.2fs (attempt %d/%d)",
+                                name, delay, attempt, max_attempts - 1)
                     await anyio.sleep(delay)
-                    delay *= 1.8
+                    delay *= 2
                     continue
+                log.error("[MCP] Tool '%s' failed: %s", name, s)
                 raise
 
-def _arun(coro_fn, *args, **kwargs):
-    async def runner():
-        return await coro_fn(*args, **kwargs)
-    return anyio.run(runner)
+
+def run_async(coro, *a, **kw):
+    return anyio.run(lambda: coro(*a, **kw))
 
 
 # =============================
-# Formatting the raw tool result
+# Tool arg normalization
 # =============================
-
-def _maybe_json_load(s: str):
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
-
-def _normalize_tool_payload(raw: str) -> Dict[str, Any]:
+def merge_and_normalize_args(positional: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Accepts whatever MCP returned and tries to normalize into a dict:
-    {statusCode, body(dict)} if possible.
+    Merge positional + kwargs and normalize Anthropic '__arg1'.
+    Heuristic:
+      - If __arg1 looks hex-like, treat as 'ticket_id'
+      - Else treat as 'query'
     """
-    # 1) raw may already be JSON with statusCode/body
-    j = _maybe_json_load(raw)
-    if isinstance(j, dict) and "statusCode" in j:
-        body = j.get("body")
-        if isinstance(body, str):
-            body_json = _maybe_json_load(body)
-            if isinstance(body_json, dict):
-                j["body"] = body_json
-        return j
+    args = dict(kwargs or {})
+    if positional is None:
+        pass
+    elif isinstance(positional, dict):
+        args = {**positional, **args}
+    else:
+        args = {"__arg1": positional, **args}
 
-    # 2) raw might be just a body JSON as string
-    if isinstance(j, dict):
-        return {"statusCode": 200, "body": j}
-
-    # 3) fallback: text (keep as is)
-    return {"statusCode": 200, "body": {"_text": raw}}
-
-def _format_ticket_status(body: Dict[str, Any]) -> str:
-    ticket_id = body.get("ticket_id")
-    status = body.get("status") or body.get("ticket_status")
-    dept = body.get("dept") or body.get("department")
-    eta_days = body.get("eta_days")
-    updated = body.get("updated_at")
-    category = body.get("category")
-    desc = body.get("description")
-    location = body.get("location")
-
-    parts = []
-    if ticket_id: parts.append(f"Ticket ID: {ticket_id}")
-    if status:    parts.append(f"Status: {status}")
-    if dept:      parts.append(f"Dept: {dept}")
-    if eta_days is not None: parts.append(f"ETA: {eta_days} day(s)")
-    if location:  parts.append(f"Location: {location}")
-    if category:  parts.append(f"Category: {category}")
-    if desc:      parts.append(f"Description: {desc}")
-    if updated:   parts.append(f"Last Updated: {updated}")
-    if not parts:
-        # Preserve something if we have only text
-        text = body.get("_text")
-        if text:
-            return text
-        return "No details were returned."
-    return "  ".join(parts)
-
-def _format_create_ticket(body: Dict[str, Any]) -> str:
-    # Attempt to output the essentials
-    tid = body.get("ticket_id")
-    dept = body.get("dept") or body.get("department")
-    eta_days = body.get("eta_days")
-    category = body.get("category")
-    desc = body.get("description")
-    location = body.get("location")
-    parts = []
-    if tid: parts.append(f"Ticket created: {tid}")
-    if dept: parts.append(f"Department: {dept}")
-    if eta_days is not None: parts.append(f"ETA: {eta_days} day(s)")
-    if location: parts.append(f"Location: {location}")
-    if category: parts.append(f"Category: {category}")
-    if desc: parts.append(f"Description: {desc}")
-    if not parts:
-        text = body.get("_text")
-        if text:
-            return text
-        return "Ticket created."
-    return "  ".join(parts)
+    if "__arg1" in args and not any(k in args for k in ("ticket_id", "query", "category")):
+        v = args.pop("__arg1")
+        if isinstance(v, str) and _HEXLIKE.match(v):
+            args["ticket_id"] = v
+        else:
+            args["query"] = v
+    return args
 
 
 # =============================
-# Build static tools (no discovery)
+# Response Formatters
 # =============================
+def format_create_ticket(data: Dict[str, Any]) -> str:
+    # Per tool outputSchema: ticket_id, status, eta_days (others may be absent)
+    return (
+        "✅ Ticket Created\n"
+        f"- Ticket ID: {data.get('ticket_id','N/A')}\n"
+        f"- Status: {data.get('status','N/A')}\n"
+        f"- ETA: {data.get('eta_days','N/A')} day(s)"
+    )
 
-def build_static_tools(gateway: GatewayMcpClient, cfg: Dict[str, str]) -> List[Tool]:
-    """
-    We bind to the known MCP tool names directly to avoid list_tools (and 429).
-    """
+def format_ticket_status(data: Dict[str, Any]) -> str:
+    return (
+        "📋 Ticket Status\n"
+        f"- Ticket ID: {data.get('ticket_id','N/A')}\n"
+        f"- Status: {data.get('status') or data.get('ticket_status','N/A')}\n"
+        f"- Department: {data.get('dept') or data.get('department','N/A')}\n"
+        f"- Category: {data.get('category','N/A')}\n"
+        f"- Last Updated: {data.get('updated_at','N/A')}\n"
+        f"- ETA: {data.get('eta_days','N/A')} day(s)"
+    )
+
+def format_search_kb(data: Dict[str, Any]) -> str:
+    if not isinstance(data, dict):
+        return str(data)
+    ans = data.get("answer")
+    src = data.get("source")
+    if ans and src:
+        return f"{ans}\n\n— Source: {src}"
+    if ans:
+        return ans
+    return data.get("error") or "No answer found in the knowledge base."
+
+def format_send_email(data: Dict[str, Any]) -> str:
+    if isinstance(data, dict) and data.get("message"):
+        return f"📧 {data['message']}"
+    return "📧 Email request processed."
+
+
+# =============================
+# Static Tools → LangChain
+# =============================
+def build_static_tools(client: GatewayMcpClient, cfg: Dict[str, str]) -> List[Tool]:
     static = [
-        ("create_ticket_tool",       "target-create-ticket__create_ticket"),
-        ("get_ticket_status_tool",   "target-get-ticket-status__get_ticket_status"),
-        ("search_kb_tool",           "target-knowledge-base__search_kb"),
-        ("send_email_tool",          "target-email__send_email"),
+        ("create_ticket_tool",     "target-create-ticket___create_ticket"),
+        ("get_ticket_status_tool", "target-get-ticket-status___get_ticket_status"),
+        ("search_kb_tool",         "target-knowledge-base___search_kb"),
+        ("send_email_tool",        "target-email___send_email"),
     ]
-
-    print("[TOOLS] Binding static tools:")
-    for alias, name in static:
-        print(f"  - {alias} → {name}")
+    for alias, mcp in static:
+        log.info("[TOOLS] Binding %s → %s", alias, mcp)
 
     def _factory(alias: str, mcp_name: str):
-        def _call(**kwargs):
-            token = _fetch_access_token(cfg)
-            print(f"[TOOLS] Calling {alias} ({mcp_name}) with args: {kwargs}")
-            raw = _arun(gateway.call_tool, token, mcp_name, kwargs or {})
-            print(f"[TOOLS] Raw result from {alias}: {raw!r}")
+        def _call(input: Any = None, **kwargs):
+            args = merge_and_normalize_args(input, kwargs)
 
-            # Pretty post-processing for the two main flows
-            norm = _normalize_tool_payload(raw)
-            body = norm.get("body", {})
-            if alias == "get_ticket_status_tool":
-                human = _format_ticket_status(body if isinstance(body, dict) else {})
-                print(f"[TOOLS] Parsed ticket status: {human}")
-                return human
+            # ----- PER-TOOL ARG NORMALIZATION & VALIDATION -----
             if alias == "create_ticket_tool":
-                human = _format_create_ticket(body if isinstance(body, dict) else {})
-                print(f"[TOOLS] Parsed create_ticket: {human}")
-                return human
+                # Aliases: allow 'location'/'email' from the LLM
+                if "address" not in args and "location" in args:
+                    args["address"] = args.pop("location")
+                if "contact_email" not in args and "email" in args:
+                    args["contact_email"] = args.pop("email")
 
-            # For search_kb / send_email or unknown, return the most readable we can
-            if isinstance(body, dict) and "_text" not in body:
-                try:
-                    # Compact humanish dict
-                    return "; ".join(f"{k}: {v}" for k, v in body.items())
-                except Exception:
-                    pass
-            return body.get("_text") or raw
+                required = ("category", "description", "address", "contact_email")
+                missing = [k for k in required if not args.get(k)]
+                if missing:
+                    return f"To create a ticket I still need: {', '.join(missing)}."
+
+            elif alias == "get_ticket_status_tool":
+                if "ticket_id" not in args and "id" in args:
+                    args["ticket_id"] = args.pop("id")
+                if not args.get("ticket_id"):
+                    return "Please provide your 8-character ticket ID."
+
+            elif alias == "search_kb_tool":
+                if not args.get("query"):
+                    return "Tell me what to search for (e.g., 'missed trash pickup')."
+
+            elif alias == "send_email_tool":
+                # Normalize 'to_email'
+                if "to_email" not in args:
+                    if "email" in args:
+                        args["to_email"] = args.pop("email")
+                    elif "contact_email" in args:
+                        args["to_email"] = args.pop("contact_email")
+                if "status" not in args and "ticket_status" in args:
+                    args["status"] = args.pop("ticket_status")
+
+                required = ("to_email", "ticket_id", "category", "description", "status")
+                missing = [k for k in required if not args.get(k)]
+                if missing:
+                    return f"To send the email I need: {', '.join(missing)}."
+            # ---------------------------------------------------
+
+            tok = fetch_token(cfg)
+            raw = run_async(client.call_tool, tok, mcp_name, args or {})
+
+            # Try JSON parse for pretty formatting
+            body = {}
+            try:
+                if isinstance(raw, str) and raw.strip().startswith("{"):
+                    body = json.loads(raw)
+            except Exception:
+                pass
+
+            if alias == "create_ticket_tool" and body:
+                return format_create_ticket(body)
+            if alias == "get_ticket_status_tool" and body:
+                return format_ticket_status(body)
+            if alias == "search_kb_tool" and body:
+                return format_search_kb(body)
+            if alias == "send_email_tool" and body:
+                return format_send_email(body)
+
+            return raw
         return _call
 
-    tools: List[Tool] = []
-    for alias, name in static:
-        tools.append(Tool(name=alias, description=f"Gateway tool bound to {name}", func=_factory(alias, name)))
-    return tools
+    return [Tool(name=alias, description=f"Gateway tool bound to {mcp}", func=_factory(alias, mcp))
+            for alias, mcp in static]
 
 
 # =============================
-# LangGraph app
+# LangGraph (LLM + Tools)
 # =============================
-
 class ChatState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
-def build_graph(lc_tools: List[Tool]):
+def build_graph(tools: List[Tool]):
     llm = ChatBedrock(
         model_id=os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-3-7-sonnet-20250219-v1:0"),
-        model_kwargs={"temperature": float(os.getenv("MODEL_TEMPERATURE", "0.0"))},
-    )
-    llm_tools = llm.bind_tools(lc_tools)
+        model_kwargs={"temperature": 0.0},
+    ).bind_tools(tools)
 
     def chatbot(state: ChatState):
         msgs = state["messages"]
         if not msgs or not isinstance(msgs[0], SystemMessage):
             msgs = [SystemMessage(content=SYSTEM_PROMPT)] + msgs
-        ai = llm_tools.invoke(msgs)
-        return {"messages": [ai]}
+        return {"messages": [llm.invoke(msgs)]}
 
-    def needs_tools(state: ChatState) -> str:
-        last = state["messages"][-1]
-        return "tools" if getattr(last, "tool_calls", None) else "end"
+    def router(state: ChatState):
+        return "tools" if getattr(state["messages"][-1], "tool_calls", None) else "end"
 
     g = StateGraph(ChatState)
     g.add_node("chatbot", chatbot)
-    g.add_node("tools", ToolNode(lc_tools))
-    g.add_conditional_edges("chatbot", needs_tools, {"tools": "tools", "end": END})
+    g.add_node("tools", ToolNode(tools))
+    g.add_conditional_edges("chatbot", router, {"tools": "tools", "end": END})
     g.add_edge("tools", "chatbot")
     g.set_entry_point("chatbot")
     return g.compile()
 
 
 # =============================
-# AgentCore app entrypoint
+# Entrypoint for Runtime
 # =============================
-
 app = BedrockAgentCoreApp()
-
-_cfg = _load_gateway_cfg()
-_gateway = GatewayMcpClient(_cfg["gateway_url"])
-_lc_tools = build_static_tools(_gateway, _cfg)  # <- static binding (no discovery)
-_graph = build_graph(_lc_tools)
-
+_cfg = load_gateway_cfg()
+_client = GatewayMcpClient(_cfg["gateway_url"])
+_tools = build_static_tools(_client, _cfg)
+_graph = build_graph(_tools)
 
 @app.entrypoint
 def invoke(payload: Dict[str, Any]):
-    user_input = (payload or {}).get("prompt") or (payload or {}).get("inputText") or ""
-    user_input = (user_input or "").strip()
-    if not user_input:
+    text = (payload or {}).get("prompt") or (payload or {}).get("inputText") or ""
+    text = (text or "").strip()
+    if not text:
         return "Please provide a message."
-    if is_emergency(user_input):
+    if is_emergency(text):
         return "Call 911 now."
 
-    out = _graph.invoke({"messages": [HumanMessage(content=user_input)]})
+    out = _graph.invoke({"messages": [HumanMessage(content=text)]})
+
+    # Return the assistant/AI message content robustly
     for m in reversed(out["messages"]):
         if getattr(m, "role", None) == "assistant" or getattr(m, "type", None) == "ai":
             return m.content
+
     return "Sorry, I didn’t catch that."
 
 
